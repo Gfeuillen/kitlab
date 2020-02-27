@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/xanzy/go-gitlab"
@@ -18,25 +19,6 @@ func check(e error) {
 	if e != nil {
 		panic(e)
 	}
-}
-
-func createIssue(gitlabClient *gitlab.Client, fullProjectName string, title string, description string) *gitlab.Issue {
-	//Get the project
-	project, _, err := gitlabClient.Projects.GetProject(fullProjectName, nil)
-	if err != nil {
-		log.Fatalln("Error getting project", err)
-	}
-
-	createIssueOptions := &gitlab.CreateIssueOptions{
-		Title:       gitlab.String(title),
-		Description: gitlab.String(description),
-	}
-
-	issue, _, err := gitlabClient.Issues.CreateIssue(project.ID, createIssueOptions)
-	if err != nil {
-		log.Fatalln("Error creating issue", err)
-	}
-	return issue
 }
 
 type CreateArguments struct {
@@ -66,6 +48,14 @@ func parseCreateArguments(args []string) CreateArguments {
 	}
 }
 
+func prettyPrint(issue *gitlab.Issue) {
+	fmt.Println(fmt.Sprintf(`Issue :
+	ID : %d
+	Title : %s
+	Url : %s
+	`, issue.IID, issue.Title, issue.WebURL))
+}
+
 func contains(arr []string, s string) bool {
 	for _, n := range arr {
 		if s == n {
@@ -80,57 +70,64 @@ func main() {
 	if gitlabToken == "" {
 		log.Fatalln("Set the GITLAB_TOKEN environment variable for this utility to work")
 	}
+	gitlabClient := gitlab.NewClient(nil, gitlabToken)
 
-	permittedOperations := []string{"create"}
+	permittedOperations := []string{"create", "info"}
 
 	if len(os.Args) < 2 || !contains(permittedOperations, os.Args[1]) {
 		log.Fatalf("Provide an operation from [%s]", strings.Join(permittedOperations, ","))
 	}
 	operation := os.Args[1]
 
-	flag.NewFlagSet("count", flag.ExitOnError)
+	//Get dir where it's launched from
+	rootDir, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	if err != nil {
+		log.Fatal(err)
+	}
+	//Load repo
+	repo, err := git.PlainOpen(rootDir)
+	if err != nil {
+		log.Fatalln("Error loading repo", err)
+	}
+
+	repoConfig, err := repo.Config()
+	if err != nil {
+		log.Fatalln("Error loading repo config", err)
+	}
+
+	//Select remote url
+	fmt.Println("Assuming 'origin' remote -- nothing else is supported now")
+	remoteURL := repoConfig.Remotes["origin"].URLs[0]
+
+	//Extract 'namespace/project' from URL
+	r, err := regexp.Compile(`^git@gitlab.com:(.*)\.git$`)
+	if err != nil {
+		log.Fatalln("Could not compile regex", err)
+	}
+
+	urlMatches := r.FindStringSubmatch(remoteURL)
+	fullProjectName := urlMatches[1]
+	fmt.Println(fmt.Sprintf("Found project : %s", fullProjectName))
+
+	//Get the project
+	project, _, err := gitlabClient.Projects.GetProject(fullProjectName, nil)
+	if err != nil {
+		log.Fatalln("Error getting project", err)
+	}
 
 	if operation == "create" {
 		config := parseCreateArguments(os.Args[2:])
 
-		//Get dir where it's launched from
-		rootDir, err := filepath.Abs(filepath.Dir(os.Args[0]))
-		if err != nil {
-			log.Fatal(err)
-		}
-		//Load repo
-		repo, err := git.PlainOpen(rootDir)
-		if err != nil {
-			log.Fatalln("Error loading repo", err)
-		}
-		repoConfig, err := repo.Config()
-		if err != nil {
-			log.Fatalln("Error loading repo config", err)
+		createIssueOptions := &gitlab.CreateIssueOptions{
+			Title:       gitlab.String(config.Title),
+			Description: gitlab.String(config.Description),
 		}
 
-		fmt.Println(repoConfig.Remotes["origin"].URLs[0])
-
-		//Select remote url
-		fmt.Println("Assuming 'origin' remote -- nothing else is supported now")
-		remoteURL := repoConfig.Remotes["origin"].URLs[0]
-
-		//Extract 'namespace/project' from URL
-		r, err := regexp.Compile(`^git@gitlab.com:(.*)\.git$`)
+		issue, _, err := gitlabClient.Issues.CreateIssue(project.ID, createIssueOptions)
 		if err != nil {
-			log.Fatalln("Could not compile regex", err)
+			log.Fatalln("Error creating issue", err)
 		}
-
-		urlMatches := r.FindStringSubmatch(remoteURL)
-		fmt.Println(fmt.Sprintf("Found project : %s", urlMatches[1]))
-
-		gitlabClient := gitlab.NewClient(nil, gitlabToken)
-
-		issue := createIssue(gitlabClient, urlMatches[1], config.Title, config.Description)
-		fmt.Println(fmt.Sprintf(`Issue created :
-        ID : %d
-        Title : %s
-        Url : %s
-        `, issue.IID, issue.Title, issue.WebURL))
+		prettyPrint(issue)
 
 		if config.BranchOut {
 			fmt.Println("Checking out")
@@ -149,5 +146,29 @@ func main() {
 				log.Fatalln("Error while running 'git checkout'", err)
 			}
 		}
+	}
+
+	if operation == "info" {
+		head, err := repo.Head()
+		if err != nil {
+			log.Fatalln("Error loading repo head", err)
+		}
+		//Extract 'issue number' from name
+		r, err := regexp.Compile(`^(\d+)-.*$`)
+		if err != nil {
+			log.Fatalln("Could not compile regex", err)
+		}
+		branchName := head.Name().Short()
+		matches := r.FindStringSubmatch(branchName)
+		if len(matches) < 2 {
+			log.Fatalln("Could not find an issue number")
+		}
+		issueID, _ := strconv.ParseInt(matches[1], 10, 32)
+
+		issue, _, err := gitlabClient.Issues.GetIssue(project.ID, int(issueID))
+		if err != nil {
+			log.Fatalln("Error getting issue", err)
+		}
+		prettyPrint(issue)
 	}
 }
