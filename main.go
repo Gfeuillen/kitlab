@@ -36,13 +36,13 @@ func contains(arr []string, s string) bool {
 	return false
 }
 
-func findGitRootDir(absolutePath string) (*git.Repository, error) {
+func findGitRepo(absolutePath string) (*git.Repository, error) {
 	//Load repo
 	repo, err := git.PlainOpen(absolutePath)
 	if err != nil {
 		parent, _ := path.Split(absolutePath)
 		if parent != "" {
-			return findGitRootDir(parent)
+			return findGitRepo(parent)
 		}
 	}
 	return repo, err
@@ -69,7 +69,7 @@ func main() {
 	}
 
 	//Load repo
-	repo, err := findGitRootDir(rootDir)
+	repo, err := findGitRepo(rootDir)
 	if err != nil {
 		log.Fatalln("Error loading repo", err)
 	}

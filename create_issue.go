@@ -2,14 +2,11 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log"
 	"os"
-	"strings"
 
 	"github.com/xanzy/go-gitlab"
 	"gopkg.in/src-d/go-git.v4"
-	"gopkg.in/src-d/go-git.v4/plumbing"
 )
 
 //CreateArgs :
@@ -53,20 +50,6 @@ func CreateGitlabIssue(config CreateArgs, gitlabClient *gitlab.Client, gitlabPro
 	}
 	prettyPrint(issue)
 	if config.BranchOut {
-		fmt.Println("Checking out")
-		w, err := repository.Worktree()
-		if err != nil {
-			log.Fatalln("Error loading repo worktree", err)
-		}
-		err = w.Checkout(
-			&git.CheckoutOptions{
-				Create: true,
-				Keep:   true,
-				Branch: plumbing.NewBranchReferenceName(fmt.Sprintf("%d-%s", issue.IID, strings.ReplaceAll(strings.ToLower(issue.Title), " ", "-"))),
-			},
-		)
-		if err != nil {
-			log.Fatalln("Error while running 'git checkout'", err)
-		}
+		CheckoutOnBranch(repository, issue)
 	}
 }
