@@ -1,50 +1,21 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/xanzy/go-gitlab"
 	"gopkg.in/src-d/go-git.v4"
-	"gopkg.in/src-d/go-git.v4/plumbing"
 )
 
 func check(e error) {
 	if e != nil {
 		panic(e)
-	}
-}
-
-type CreateArguments struct {
-	Title       string
-	Description string
-	BranchOut   bool
-}
-
-func parseCreateArguments(args []string) CreateArguments {
-	createCommand := flag.NewFlagSet("create", flag.ExitOnError)
-	title := createCommand.String("t", "", "Title of the issue")
-	description := createCommand.String("d", "", "Description of the issue")
-	branchOut := createCommand.Bool("b", false, "Should a branch be created for this issue")
-	createCommand.Parse(args)
-	if *title == "" {
-		createCommand.Usage()
-		os.Exit(1)
-	}
-	if *description == "" {
-		log.Println("Assuming description is equal to the title ('-d')")
-		description = title
-	}
-	return CreateArguments{
-		Title:       *title,
-		Description: *description,
-		BranchOut:   *branchOut,
 	}
 }
 
@@ -65,6 +36,18 @@ func contains(arr []string, s string) bool {
 	return false
 }
 
+func findGitRootDir(absolutePath string) (*git.Repository, error) {
+	//Load repo
+	repo, err := git.PlainOpen(absolutePath)
+	if err != nil {
+		parent, _ := path.Split(absolutePath)
+		if parent != "" {
+			return findGitRootDir(parent)
+		}
+	}
+	return repo, err
+}
+
 func main() {
 	gitlabToken := os.Getenv("GITLAB_TOKEN")
 	if gitlabToken == "" {
@@ -75,7 +58,7 @@ func main() {
 	permittedOperations := []string{"create", "info"}
 
 	if len(os.Args) < 2 || !contains(permittedOperations, os.Args[1]) {
-		log.Fatalf("Provide an operation from [%s]", strings.Join(permittedOperations, ","))
+		log.Fatalf("Provide an operation from [ %s ]", strings.Join(permittedOperations, " | "))
 	}
 	operation := os.Args[1]
 
@@ -84,8 +67,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	//Load repo
-	repo, err := git.PlainOpen(rootDir)
+	repo, err := findGitRootDir(rootDir)
 	if err != nil {
 		log.Fatalln("Error loading repo", err)
 	}
@@ -106,6 +90,9 @@ func main() {
 	}
 
 	urlMatches := r.FindStringSubmatch(remoteURL)
+	if len(urlMatches) < 2 {
+		log.Fatalln("Did not recognize gitlab repository")
+	}
 	fullProjectName := urlMatches[1]
 	fmt.Println(fmt.Sprintf("Found project : %s", fullProjectName))
 
@@ -115,60 +102,13 @@ func main() {
 		log.Fatalln("Error getting project", err)
 	}
 
-	if operation == "create" {
-		config := parseCreateArguments(os.Args[2:])
-
-		createIssueOptions := &gitlab.CreateIssueOptions{
-			Title:       gitlab.String(config.Title),
-			Description: gitlab.String(config.Description),
-		}
-
-		issue, _, err := gitlabClient.Issues.CreateIssue(project.ID, createIssueOptions)
-		if err != nil {
-			log.Fatalln("Error creating issue", err)
-		}
-		prettyPrint(issue)
-
-		if config.BranchOut {
-			fmt.Println("Checking out")
-			w, err := repo.Worktree()
-			if err != nil {
-				log.Fatalln("Error loading repo worktree", err)
-			}
-			err = w.Checkout(
-				&git.CheckoutOptions{
-					Create: true,
-					Keep:   true,
-					Branch: plumbing.NewBranchReferenceName(fmt.Sprintf("%d-%s", issue.IID, strings.ReplaceAll(strings.ToLower(issue.Title), " ", "-"))),
-				},
-			)
-			if err != nil {
-				log.Fatalln("Error while running 'git checkout'", err)
-			}
-		}
-	}
-
-	if operation == "info" {
-		head, err := repo.Head()
-		if err != nil {
-			log.Fatalln("Error loading repo head", err)
-		}
-		//Extract 'issue number' from name
-		r, err := regexp.Compile(`^(\d+)-.*$`)
-		if err != nil {
-			log.Fatalln("Could not compile regex", err)
-		}
-		branchName := head.Name().Short()
-		matches := r.FindStringSubmatch(branchName)
-		if len(matches) < 2 {
-			log.Fatalln("Could not find an issue number")
-		}
-		issueID, _ := strconv.ParseInt(matches[1], 10, 32)
-
-		issue, _, err := gitlabClient.Issues.GetIssue(project.ID, int(issueID))
-		if err != nil {
-			log.Fatalln("Error getting issue", err)
-		}
-		prettyPrint(issue)
+	switch operation {
+	case "create":
+		config := ParseCreateArgs(os.Args[2:])
+		CreateGitlabIssue(config, gitlabClient, project, repo)
+	case "info":
+		InfoIssue(gitlabClient, project, repo)
+	default:
+		log.Fatalf("Provide an operation from [%s]", strings.Join(permittedOperations, ","))
 	}
 }
